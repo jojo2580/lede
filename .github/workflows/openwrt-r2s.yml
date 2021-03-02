@@ -6,283 +6,302 @@
 # Blog: https://p3terx.com
 #=================================================
 
-name: Build Raspberry Pi 2 Lean's OpenWrt
+name: OpenWrt-R2S
 
-on:
+on: 
   repository_dispatch:
-    types: [lean, rpi2]
-  workflow_dispatch:
-  schedule:
-    - cron: 0 18 * * *
-#  watch:
-#    types: started
 
 env:
-  REPO_URL: https://github.com/coolsnowwolf/lede
-  REPO_BRANCH: master
-  CONFIG_FILE: config/lean/bcm27xx/rpi2-lean-target.config
-  DIY_SH: scripts/lean-openwrt.sh
-  IPV6MOD_IN_FIRMWARE: true
-  KMODS_IN_FIRMWARE: true
-  WEBROOT: /data/dnmp/www/openwrt.cc
-  UPLOAD_RCLONE: true
-  UPLOAD_WETRANSFER: true
-  UPLOAD_COWTRANSFER: true
+  REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
+  PPPOE_USERNAME: ${{ secrets.PPPOE_USERNAME }}
+  PPPOE_PASSWD: ${{ secrets.PPPOE_PASSWD }}
+  SCKEY: ${{ secrets.SCKEY }}
+  TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+  SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
   TZ: Asia/Shanghai
 
 jobs:
-  Build:
-    runs-on: ubuntu-18.04
-
-    outputs:
-      OPENWRTROOT: ${{ steps.update.outputs.OPENWRTROOT }}
-      PLATFORM: ${{ steps.compile.outputs.PLATFORM }}
-      TARGET: ${{ steps.compile.outputs.TARGET }}
-      SUBTARGET: ${{ steps.compile.outputs.SUBTARGET }}
-      FIRMWARE: ${{ steps.compile.outputs.FIRMWARE }}
-      GENERATE_STATUS: ${{ steps.generate.outputs.GENERATE_STATUS }}
-
+  build:
+    runs-on: Ubuntu-20.04
+    
+    name: Build ${{matrix.target}}
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ["${{ github.event.client_payload.target }}"]
+        
     steps:
-      - name: Checkout
-        uses: actions/checkout@main
+    - name: Checkout
+      uses: actions/checkout@main
 
-      - name: Initialization Environment
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
-          sudo -E apt-get -qq update
-          sudo -E apt-get -qq install $(curl -fsSL git.io/depends-ubuntu-1804) tree
-          sudo -E apt-get -qq autoremove --purge
-          sudo -E apt-get -qq clean
-          sudo timedatectl set-timezone "$TZ"
+    - name: cancel running workflows
+      uses: styfle/cancel-workflow-action@main
+      if: contains(github.event.action, 'cw')
+      with:
+        workflow_id: 4439867
+        access_token: ${{ github.token }}
 
-      - name: Clone Source Code
-        run: |
-          df -hT $PWD
-          git clone --depth 1 $REPO_URL -b $REPO_BRANCH openwrt
+    - name: Load Settings.ini
+      run: |
+        source "${GITHUB_WORKSPACE}/devices/common/settings.ini"
+        if [ -f "devices/${{matrix.target}}/settings.ini" ]; then
+          source "${GITHUB_WORKSPACE}/devices/${{matrix.target}}/settings.ini"
+        fi
+        echo "REPO_URL=${REPO_URL}" >> $GITHUB_ENV
+        echo "REPO_BRANCH=${REPO_BRANCH}" >> $GITHUB_ENV
+        echo "CONFIG_FILE=${CONFIG_FILE}" >> $GITHUB_ENV
+        echo "DIY_SH=${DIY_SH}" >> $GITHUB_ENV
+        echo "FREE_UP_DISK=${FREE_UP_DISK}" >> $GITHUB_ENV
+        echo "UPLOAD_BIN_DIR_FOR_ARTIFACT=${UPLOAD_BIN_DIR_FOR_ARTIFACT}" >> $GITHUB_ENV
+        echo "UPLOAD_FIRMWARE_FOR_ARTIFACT=${UPLOAD_FIRMWARE_FOR_ARTIFACT}" >> $GITHUB_ENV
+        echo "UPLOAD_FIRMWARE_FOR_RELEASE=${UPLOAD_FIRMWARE_FOR_RELEASE}" >> $GITHUB_ENV
+        echo "UPLOAD_FIRMWARE_TO_COWTRANSFER=${UPLOAD_FIRMWARE_TO_COWTRANSFER}" >> $GITHUB_ENV
+        echo "UPLOAD_FIRMWARE_TO_WETRANSFER=${UPLOAD_FIRMWARE_TO_WETRANSFER}" >> $GITHUB_ENV
 
-      - name: Update Feeds
-        id: update
-        run: |
-          cd openwrt
-          echo "OPENWRTROOT=$PWD" >> $GITHUB_ENV
-          echo "::set-output name=OPENWRTROOT::$(echo $PWD)"
-          ./scripts/feeds update -a
+    - name: Trigger Packages Update
+      run: |
+        gitdate=$(curl -s "https://api.github.com/repos/garypang13/openwrt-packages/actions/runs" | jq -r '.workflow_runs[0].created_at')
+        gitdate=$(date -d "$gitdate" +%s)
+        now=$(date -d "$(date '+%Y-%m-%d %H:%M:%S')" +%s)
+        if [[ $(expr $gitdate + 60) < $now ]]; then
+        curl -X POST https://api.github.com/repos/garypang13/openwrt-packages/dispatches \
+        -H "Accept: application/vnd.github.everest-preview+json" \
+        -H "Authorization: token ${{ secrets.REPO_TOKEN }}" \
+        --data '{"event_type": "update"}'
+        fi
 
-      - name: Install Feeds
-        run: |
-          cd $OPENWRTROOT
-          ./scripts/feeds install -a
+    - name: Initialization environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        # docker rmi `docker images -q`
+        # sudo -E apt-get -qq purge azure-cli ghc* zulu* hhvm llvm* firefox google* dotnet* powershell openjdk* mysql* php* android*
+        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet/shared /opt/ghc
+        sudo -E apt-get -qq update
+        sudo -E apt-get -qq install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev patch python3 python2.7 unzip zlib1g-dev lib32gcc1 libc6-dev-i386 subversion flex uglifyjs gcc-multilib g++-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint device-tree-compiler ccache xsltproc rename antlr3 gperf wget curl swig rsync upx
+        sudo -E apt-get -qq autoremove --purge
+        sudo -E apt-get -qq clean
+        sudo timedatectl set-timezone "$TZ"
+    
+    - name: Get current date
+      id: date
+      run: |
+        echo "date=$(date +'%m/%d_%Y_%H/%M')" >> $GITHUB_ENV
+        echo "date2=$(date +'%m/%d %Y')" >> $GITHUB_ENV
+        echo "date3=$(date +'%m.%d')" >> $GITHUB_ENV
+        echo "date4=$(date +'%m.%d.%Y')" >> $GITHUB_ENV
 
-      - name: Load Custom Configuration
-        run: |
-          [ -e files ] && mv files $OPENWRTROOT/files
-          [ -e $CONFIG_FILE ] && mv $CONFIG_FILE $OPENWRTROOT/.config
-          cat config/lean/bcm27xx/rpi-lean-extra.config >> $OPENWRTROOT/.config
-          chmod +x scripts/*.sh
-          cd $OPENWRTROOT
-          ../$DIY_SH
-          ../scripts/preset-clash-core.sh armv7
-          ../scripts/preset-terminal-tools.sh
+    - name: Clone source code
+      run: |
+        git clone --depth 1 $REPO_URL -b $REPO_BRANCH openwrt
+        cd openwrt
+        if [[ ${{matrix.target}} =~ (redmi-ac2100|phicomm-k2p|newifi-d2|k2p-32m-usb|XY-C5|xiaomi-r3p) ]]; then
+            wget -cO sdk.tar.xz https://downloads.openwrt.org/snapshots/targets/ramips/mt7621/openwrt-sdk-ramips-mt7621_gcc-8.4.0_musl.Linux-x86_64.tar.xz
+        elif [[ ${{matrix.target}} == "x86_64" ]]; then
+            wget -cO sdk.tar.xz https://downloads.openwrt.org/snapshots/targets/x86/64/openwrt-sdk-x86-64_gcc-8.4.0_musl.Linux-x86_64.tar.xz
+        elif [[ ${{matrix.target}} =~ (nanopi-r2s|nanopi-r4s) ]]; then
+            wget -cO sdk.tar.xz https://downloads.openwrt.org/snapshots/targets/rockchip/armv8/openwrt-sdk-rockchip-armv8_gcc-8.4.0_musl.Linux-x86_64.tar.xz
+        fi
+      
+    - name: Free up disk space
+      if: env.FREE_UP_DISK == 'true'
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo mkdir -p -m 777 /mnt/openwrt/dl /mnt/openwrt/staging_dir /mnt/openwrt/build_dir/hostpkg openwrt/build_dir
+        ln -sf /mnt/openwrt/dl openwrt/dl
+        ln -sf /mnt/openwrt/staging_dir openwrt/staging_dir
+        ln -sf /mnt/openwrt/build_dir/hostpkg openwrt/build_dir/hostpkg
 
-      - name: Download Package
-        id: package
-        run: |
-          cd $OPENWRTROOT
-          if "$KMODS_IN_FIRMWARE" = 'true'
-          then
-              echo "CONFIG_ALL_KMODS=y" >> .config
-          fi
-          make defconfig
-          make download -j8
-          find dl -size -1024c -exec ls -l {} \;
-          find dl -size -1024c -exec rm -f {} \;
+    - name: Load && Update feeds
+      run: |
+        cp -rf devices/common/. openwrt/
+        cp -rf devices/${{matrix.target}}/. openwrt/
+        cd openwrt
+        ./scripts/feeds update -a
 
-      - name: Compile Packages
-        id: compile
-        run: |
-          cd $OPENWRTROOT
-          echo -e "$(nproc) thread compile"
-          make tools/compile -j$(nproc) || make tools/compile -j1 V=s
-          make toolchain/compile -j$(nproc) || make toolchain/compile -j1 V=s
-          make target/compile -j$(nproc) || make target/compile -j1 V=s IGNORE_ERRORS=1
-          make diffconfig
-          make package/compile -j$(nproc) IGNORE_ERRORS=1 || make package/compile -j1 V=s IGNORE_ERRORS=1
-          make package/index
-          cd $OPENWRTROOT/bin/packages/*
-          PLATFORM=$(basename `pwd`)
-          echo "PLATFORM=$PLATFORM" >> $GITHUB_ENV
-          echo "::set-output name=PLATFORM::$(echo $PLATFORM)"
-          cd $OPENWRTROOT/bin/targets/*
-          TARGET=$(basename `pwd`)
-          echo "TARGET=$TARGET" >> $GITHUB_ENV
-          echo "::set-output name=TARGET::$(echo $TARGET)"
-          cd *
-          SUBTARGET=$(basename `pwd`)
-          echo "SUBTARGET=$SUBTARGET" >> $GITHUB_ENV
-          echo "::set-output name=SUBTARGET::$(echo $SUBTARGET)"
-          echo "FIRMWARE=$PWD" >> $GITHUB_ENV
-          echo "::set-output name=FIRMWARE::$(echo $PWD)"
-          echo "::set-output name=COMPILE_STATUS::success"
+    - name: Load custom configuration
+      run: |
+        cp -rf devices openwrt/
+        cd openwrt
+        chmod +x devices/common/$DIY_SH
+        /bin/bash "devices/common/$DIY_SH"
+        cp -Rf ./diy/* ./
+        if [ -f "devices/${{matrix.target}}/$DIY_SH" ]; then
+          chmod +x devices/${{matrix.target}}/$DIY_SH
+          /bin/bash "devices/${{matrix.target}}/$DIY_SH"
+        fi
+        cp -f devices/common/default-settings package/*/*/default-settings/root/etc/uci-defaults/99-default-settings
+        if [ -f "devices/${{matrix.target}}/default-settings" ]; then
+          echo >> package/*/*/default-settings/root/etc/uci-defaults/99-default-settings
+          cat devices/${{matrix.target}}/default-settings >> package/*/*/default-settings/root/etc/uci-defaults/99-default-settings
+        fi
+        cp -f devices/common/$CONFIG_FILE .config
+        if [ -f "devices/${{matrix.target}}/$CONFIG_FILE" ]; then
+          echo >> .config
+          cat devices/${{matrix.target}}/$CONFIG_FILE >> .config
+        fi
 
-      - name: Generate Firmware
-        if: steps.compile.outputs.COMPILE_STATUS == 'success'
-        id: generate
-        run: |
-          cd data/opkg
-          sed -i "s/subtarget/$SUBTARGET/g" distfeeds*.conf
-          sed -i "s/target\//$TARGET\//g" distfeeds*.conf
-          sed -i "s/platform/$PLATFORM/g" distfeeds*.conf
-          cd $OPENWRTROOT
-          echo "dtparam=i2c_arm=on,audio=on" >> target/linux/bcm27xx/image/config.txt
-          mkdir -p files/etc/uci-defaults/
-          cp ../scripts/init-settings.sh files/etc/uci-defaults/99-init-settings
-          mkdir -p files/etc/opkg
-          cp ../data/opkg/distfeeds-packages-server.conf files/etc/opkg/distfeeds.conf.server
-          if "$KMODS_IN_FIRMWARE" = 'true'
-          then
-              mkdir -p files/www/snapshots
-              cp -r bin/targets files/www/snapshots
-              cp ../data/opkg/distfeeds-18.06-local.conf files/etc/opkg/distfeeds.conf
-          else
-              cp ../data/opkg/distfeeds-18.06-remote.conf files/etc/opkg/distfeeds.conf
-          fi
-          cp files/etc/opkg/distfeeds.conf.server files/etc/opkg/distfeeds.conf.mirror
-          sed -i "s/http:\/\/192.168.123.100:2345\/snapshots/https:\/\/openwrt.cc\/snapshots\/$(date +"%Y-%m-%d")\/lean/g" files/etc/opkg/distfeeds.conf.mirror
-          if "$IPV6MOD_IN_FIRMWARE" = 'true'
-          then
-              mkdir -p files/www/ipv6-modules
-              cp bin/packages/$PLATFORM/luci/luci-proto-ipv6* files/www/ipv6-modules
-              cp bin/packages/$PLATFORM/base/{ipv6helper*,odhcpd-ipv6only*,odhcp6c*,6in4*} "files/www/ipv6-modules"
-              cp bin/targets/$TARGET/$SUBTARGET/packages/{ip6tables*,kmod-nf-nat6*,kmod-ipt-nat6*,kmod-sit*,kmod-ip6tables-extra*} "files/www/ipv6-modules"
-              mkdir -p files/bin
-              cp ../scripts/ipv6-helper.sh files/bin/ipv6-helper
-          fi
-          make package/install -j$(nproc) || make package/install -j1 V=s
-          make target/install -j$(nproc) || make target/install -j1 V=s
-          make checksum
-          echo "::set-output name=GENERATE_STATUS::success"
+    - name: Apply patches
+      run: |
+        cd openwrt
+        find "devices/common/patches" -type f ! -path 'devices/common/patches/china_mirrors.patch' -name '*.patch' -print0 | sort -z | xargs -I % -t -0 -n 1 sh -c "cat '%'  | patch -d './' -p1 -E --forward --no-backup-if-mismatch"
+        if [ -n "$(ls -A "devices/${{matrix.target}}/patches" 2>/dev/null)" ]; then
+          find "devices/${{matrix.target}}/patches" -type f -name '*.patch' -print0 | sort -z | xargs -I % -t -0 -n 1 sh -c "cat '%'  | patch -d './' -p1 -E --forward --no-backup-if-mismatch"
+        fi
+        
+    - name: Default PPPOE Setting
+      if: env.PPPOE_USERNAME && env.PPPOE_PASSWD
+      run: |
+        sed -i '$i uci set network.wan.username=${{ env.PPPOE_USERNAME }}' openwrt/package/*/*/default-settings/root/etc/uci-defaults/99-default-settings
+        sed -i '$i uci set network.wan.password=${{ env.PPPOE_PASSWD }}' openwrt/package/*/*/default-settings/root/etc/uci-defaults/99-default-settings
+        sed -i '$i uci commit network' openwrt/package/*/*/default-settings/root/etc/uci-defaults/99-default-settings
+              
+    - name: SSH connection to Actions
+      uses: garypang13/debugger-action@master
+      if: contains(github.event.action, 'ssh')
 
-      - name: Upload Bin Folder
-        uses: actions/upload-artifact@main
-        if: steps.generate.outputs.GENERATE_STATUS == 'success'
-        with:
-          name: bin-archive
-          path: openwrt/bin
+    - name: Download package
+      id: package
+      run: |
+        cd openwrt
+        make defconfig
+        make download -j$(($(nproc)+1))
 
-  Upload:
-    needs: [Build]
-    runs-on: ubuntu-18.04
+    - name: Compile the firmware
+      id: compile
+      run: |
+        cd openwrt
+        echo -e "$(($(nproc)+1)) thread compile"
+        make -j$(($(nproc)+1)) || make -j1 V=s
+        echo "::set-output name=status::success"
+   
+    - name: Check space usage
+      run: df -hT
+   
+    - name: Upload bin directory
+      uses: actions/upload-artifact@main
+      if: env.UPLOAD_BIN_DIR_FOR_ARTIFACT == 'true'
+      with:
+        name: OpenWrt_bin_${{matrix.target}}
+        path: openwrt/bin
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@main
+    - name: Organize files
+      id: organize
+      run: |
+        mkdir firmware && find openwrt/bin/targets/*/*/ -maxdepth 1 \
+        -name "*combined*" \
+        -or -name "*sysupgrade*" \
+        -or -name "*armvirt-64-default-rootfs*" \
+        -or -name "sha256sums" \
+        | xargs -i mv -f {} ./firmware/
+        cp openwrt/.config  ./firmware/${{matrix.target}}.config
+        cd firmware
+        echo ${{ env.date4 }} > version.txt
+        mv sha256sums ${{matrix.target}}_sha256sums
+        rename -v "s/^openwrt/${{ env.date3 }}-openwrt/" *
+        rename -v "s/xiaomi_redmi-router/redmi/" *bin
+        rename -v "s/(d-team_|xiaoyu_)//" *bin
+        rename -v "s/friendlyarm_//" *gz
+        echo "FIRMWARE=$PWD" >> $GITHUB_ENV
+        Emoji=("🎉" "🤞" "✨" "🎁" "🎈" "🎄" "🎨" "💋" "🍓" "🍕" "🍉" "💐" "🌴" "🚀" "🛸" "🗽" "⛅" "🌈" "🔥" "⛄" "🐶" "🏅" "🦄" "🐤")
+        RANDOM=$$$(date +%s)
+        rand=$[$RANDOM % ${#Emoji[@]}]
+        echo "EMOJI=${Emoji[$rand]}" >> $GITHUB_ENV
+        if [ ${{matrix.target}} == "phicomm-k2p" ]; then
+        echo "NOTICE=刷机时breed里的闪存布局请选择斐讯而非默认的公版" >> $GITHUB_ENV
+        elif [ ${{matrix.target}} == "x86_64" ]; then
+        echo "NOTICE=请分配不少于800M的存储容量" >> $GITHUB_ENV
+        fi
 
-      - name: Restore Variables
-        run: |
-          echo "OPENWRTROOT=$(echo '${{needs.Build.outputs.OPENWRTROOT}}')" >> $GITHUB_ENV
-          echo "PLATFORM=$(echo '${{needs.Build.outputs.PLATFORM}}')" >> $GITHUB_ENV
-          echo "TARGET=$(echo '${{needs.Build.outputs.TARGET}}')" >> $GITHUB_ENV
-          echo "SUBTARGET=$(echo '${{needs.Build.outputs.SUBTARGET}}')" >> $GITHUB_ENV
-          echo "FIRMWARE=$(echo '${{needs.Build.outputs.FIRMWARE}}')" >> $GITHUB_ENV
-          echo "GENERATE_STATUS=$(echo '${{needs.Build.outputs.GENERATE_STATUS}}')" >> $GITHUB_ENV
+    - name: Deploy files to server
+      uses: easingthemes/ssh-deploy@master
+      continue-on-error: true
+      if: env.SSH_PRIVATE_KEY && ! contains(github.event.action, 'noser')
+      with:
+        SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        ARGS: "-avzr --exclude="
+        SOURCE: firmware/
+        REMOTE_HOST: op.supes.top
+        REMOTE_USER: root
+        TARGET: "/www/wwwroot/op.supes.top/firmware/${{matrix.target}}/"
+ 
+    - name: Upload firmware to cowtransfer
+      if: env.UPLOAD_FIRMWARE_TO_COWTRANSFER == 'true'
+      continue-on-error: true
+      run: |
+        curl -fsSL git.io/file-transfer | sh
+        cowurl=$(./transfer cow --block 2621440 -s --no-progress ${FIRMWARE})
+        cowurl=$(echo $cowurl | grep -o -E "https[^ ]*")
+        echo "COWURL=$cowurl" >> $GITHUB_ENV
+        echo "Download Link: ${{ env.EMOJI }} $cowurl ${{ env.EMOJI }} 🚀"
+ 
+    - name: Upload firmware to WeTransfer
+      if: env.UPLOAD_FIRMWARE_TO_WETRANSFER == 'true' && ! contains(github.event.action, 'noup')
+      continue-on-error: true
+      run: |
+        curl -fsSL git.io/file-transfer | sh
+        wetrans=$(./transfer wet -s -p 16 --no-progress ${FIRMWARE})
+        wetrans=$(echo $wetrans | grep -o -E "https[^ ]*")
+        echo "WETRANS=$wetrans" >> $GITHUB_ENV
+        echo "Download Link: ${{ env.EMOJI }} $wetrans ${{ env.EMOJI }} 🚀"
 
-      - name: Download Bin Folder
-        uses: actions/download-artifact@v2
-        if: env.GENERATE_STATUS == 'success'
-        with:
-          name: bin-archive
-          path: openwrt/bin
+    - name: Create release
+      id: create_release
+      if: env.REPO_TOKEN && env.UPLOAD_FIRMWARE_FOR_RELEASE == 'true'
+      continue-on-error: true
+      run: |
+        echo -e "墙内加速下载 🚀:\n" >> release.txt
+        echo -e "[腾讯云] (https://op.supes.top/firmware/${{matrix.target}}/ ☁)\n" >> release.txt
+        [ ${{ env.WETRANS }} ] && echo -e "[WeTransfer] (${{ env.WETRANS }} 🗽)\n" >> release.txt
+        [ ${{ env.COWURL }} ] && echo -e "[奶牛上传] (${{ env.COWURL }} 🐮)\n" >> release.txt
+        [ ${{ env.NOTICE }} ] && echo -e "${{ env.NOTICE }}" >> release.txt || true
 
-      - name: Deploy Packages-Server
-        if: env.GENERATE_STATUS == 'success'
-        run: |
-          mkdir -p server/web/snapshots/targets/$TARGET/$SUBTARGET
-          cp -r $OPENWRTROOT/bin/packages server/web/snapshots
-          cp -r $OPENWRTROOT/bin/targets/$TARGET/$SUBTARGET/packages server/web/snapshots/targets/$TARGET/$SUBTARGET
-          mv server packages-server
-          zip -qrm packages-server.zip packages-server
-          mv packages-server.zip $OPENWRTROOT/bin/targets/$TARGET/$SUBTARGET
+    - name: Upload firmware for release
+      uses: softprops/action-gh-release@v1
+      continue-on-error: true
+      if: env.REPO_TOKEN && env.UPLOAD_FIRMWARE_FOR_RELEASE == 'true'
+      env:
+        GITHUB_TOKEN: ${{ secrets.REPO_TOKEN }}
+      with:
+        files: "${{ env.FIRMWARE }}/*"
+        name: ${{ env.date2 }} ${{matrix.target}} ${{ env.EMOJI }}
+        tag_name: ${{ env.date }}_${{matrix.target}}
+        body_path: release.txt
 
-      - name: Rclone Upload
-        env:
-          RCLONE_PACKAGE: ${{ secrets.RCLONE_PACKAGE }}
-          RCLONE_FIRMWARE: ${{ secrets.RCLONE_FIRMWARE }}
-        if: env.GENERATE_STATUS == 'success' && env.UPLOAD_RCLONE == 'true' && env.RCLONE_PACKAGE != ''
-        run: |
-          cd $OPENWRTROOT
-          curl https://rclone.org/install.sh | sudo bash
-          mkdir -p ~/.config/rclone/
-          cat << EOF > ~/.config/rclone/rclone.conf
-          ${{ secrets.RCLONE_CONFIG }}
-          EOF
-          rclone copy bin $RCLONE_PACKAGE:$(date +"%Y-%m-%d")/lean --filter-from ../data/rclone/upload-rule.txt
-          rclone copy bin/targets $RCLONE_FIRMWARE:$(date +"%Y-%m-%d")/lean --exclude "packages/"
-          echo "::warning file=Firmware-GoogleDrive::Download Link: https://drive.google.com/drive/folders/1_P2RoPbguY99qJxmCU4SKUgP8Kg0Xr03"
+    - name: Upload firmware for artifact
+      uses: actions/upload-artifact@main
+      continue-on-error: true
+      if: env.UPLOAD_FIRMWARE_FOR_ARTIFACT == 'true'
+      with:
+        name: ${{ env.date3 }} ${{matrix.target}}
+        path: ${{ env.FIRMWARE }}
+        
+    - name: WeChat notification
+      continue-on-error: true
+      if: env.SCKEY
+      run: |
+        [ steps.compile.outputs.status == 'success' ] && curl https://sc.ftqq.com/${{ secrets.SCKEY }}.send?text=🎉OpenWrt_${{ env.date3 }}_${{matrix.target}}编译完成😋|| curl https://sc.ftqq.com/${{ secrets.SCKEY }}.send?text=❌OpenWrt_${{ env.date3 }}_${{matrix.target}}编译失败😂
 
-      - name: Pre Create Directory
-        uses: JimCronqvist/action-ssh@master
-        if: env.GENERATE_STATUS == 'success' && env.REMOTE_PRIVATEKEY != ''
-        with:
-          hosts: ${{ secrets.REMOTE_USER }}@${{ secrets.REMOTE_IP }}
-          privateKey: ${{ secrets.REMOTE_PRIVATEKEY }}
-          debug: false
-          command: |
-            cd /data/dnmp/www/openwrt.cc
-            mkdir -p releases/targets/$TARGET/$SUBTARGET
-            mkdir -p archive/$(date +%Y)/$(date +%m)/$(date +%d)/releases/targets/$TARGET/$SUBTARGET
+    - name: Telegram notification
+      if: env.TELEGRAM_TOKEN && ! contains(github.event.action, 'notg')
+      continue-on-error: true
+      run: |
+        # [ steps.compile.outputs.status == 'success' ] && curl -k --data chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" --data "text=🎉 OpenWrt ${{ env.date3 }} ${{matrix.target}} 编译成功 😋  https://op.supes.top/firmware/${{matrix.target}}/  ${{ env.COWURL }}   ${{ env.WETRANS }} 🚀" "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage" || curl -k --data chat_id="${{ secrets.TELEGRAM_TO }}" --data "text=❌ OpenWrt ${{ env.date3 }} ${{matrix.target}} 编译失败 😂" "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage"
 
-      - name: Deploy Files To Server
-        uses: easingthemes/ssh-deploy@master
-        if: env.GENERATE_STATUS == 'success' && env.REMOTE_PRIVATEKEY != ''
-        continue-on-error: true
-        with:
-          SSH_PRIVATE_KEY: ${{ secrets.REMOTE_PRIVATEKEY }}
-          ARGS: "-avzr --exclude="
-          SOURCE: "openwrt/bin/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/"
-          REMOTE_HOST: ${{ secrets.REMOTE_IP }}
-          REMOTE_USER: ${{ secrets.REMOTE_USER }}
-          TARGET: "{{ env.WEBROOT }}/releases/targets/${{ env.TARGET }}/${{ env.SUBTARGET }}/"
+    - name: Delete workflow runs
+      uses: GitRML/delete-workflow-runs@main
+      with:
+        retain_days: 10
+        keep_minimum_runs: 0
 
-      - name: Deploy Files Archive
-        uses: JimCronqvist/action-ssh@master
-        if: env.GENERATE_STATUS == 'success' && env.REMOTE_PRIVATEKEY != ''
-        with:
-          hosts: "${{ secrets.REMOTE_USER }}@${{ secrets.REMOTE_IP }}"
-          privateKey: ${{ secrets.REMOTE_PRIVATEKEY }}
-          debug: false
-          command: |
-            mkdir -p /data/dnmp/www/openwrt.cc/archive/$(date +%Y)/$(date +%m)/$(date +%d)/releases/targets/$TARGET
-            cp -rf /data/dnmp/www/openwrt.cc/releases/targets/$TARGET/$SUBTARGET /data/dnmp/www/openwrt.cc/archive/$(date +%Y)/$(date +%m)/$(date +%d)/releases/targets/$TARGET/$SUBTARGET
-
-      - name: Organize Files
-        id: organize
-        if: env.GENERATE_STATUS == 'success'
-        run: |
-          cd ${FIRMWARE}
-          rm -rf packages
-          cd $OPENWRTROOT/bin/targets/$TARGET/
-          curl -fsSL git.io/file-transfer | sh
-          df -hT $PWD
-          echo "::set-output name=ORGANIZE_STATUS::success"
-
-      - name: Upload Firmware To CowTransfer
-        if: steps.organize.outputs.ORGANIZE_STATUS == 'success' && env.UPLOAD_COWTRANSFER == 'true'
-        run: |
-          cd $OPENWRTROOT/bin/targets/$TARGET/
-          ./transfer cow --block 2621440 -s -p 64 --no-progress ${FIRMWARE} 2>&1 | tee cowtransfer.log
-          echo "::warning file=Firmware-Cowtransfer.com::$(cat cowtransfer.log | grep https)"
-
-      - name: Upload Firmware To WeTransfer
-        if: steps.organize.outputs.ORGANIZE_STATUS == 'success' && env.UPLOAD_WETRANSFER == 'true'
-        run: |
-          cd $OPENWRTROOT/bin/targets/$TARGET/
-          ./transfer wet -s -p 16 --no-progress ${FIRMWARE} 2>&1 | tee wetransfer.log
-          echo "::warning file=Firmware-Wetransfer.com::$(cat wetransfer.log | grep https)"
-
-      - name: Delete Artifacts
-        uses: geekyeggo/delete-artifact@v1
-        with:
-          name: |
-            bin-archive
+    - name: Remove old Releases
+      uses: dev-drprasad/delete-older-releases@master
+      continue-on-error: true
+      if: env.UPLOAD_FIRMWARE_FOR_RELEASE == 'true' && !cancelled()
+      with:
+        keep_latest: 15
+        delete_tags: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.REPO_TOKEN }}
